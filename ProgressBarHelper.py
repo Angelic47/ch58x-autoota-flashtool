@@ -2,6 +2,28 @@
 
 from tqdm import tqdm
 import time
+import sys
+import itertools
+import time
+
+class DosSpinner:
+    """
+    A simple DOS-style spinner for command line applications.
+    This spinner can be used to indicate that a process is still running.
+    """
+
+    _FRAMES = r"|/-\\"
+
+    def __init__(self, stream=sys.stdout, frames=_FRAMES):
+        self._stream = stream
+        self._frames = itertools.cycle(frames)
+        self._first_frame = False
+    
+    def spin(self) -> None:
+        self._stream.write(next(self._frames))
+        self._stream.flush()
+        self._stream.write("\b")
+        self._stream.flush()
 
 def make_progress_callback(size_total, desc="Progress") -> callable:
     """

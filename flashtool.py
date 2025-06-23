@@ -43,9 +43,12 @@ import sys
 from pathlib import Path
 from typing import Callable, Dict
 
+from bleak import BleakError
 from AutoOTAHelper import AutoOTADevice, AutoOTAController
-from AutoOTACommand import AutoOTAReadCommand, AutoOTAProgramCommand, AutoOTAEraseCommand, AutoOTAVerifyCommand, AutoOTAConfirmCommand
-from ProgressBarHelper import make_progress_callback
+from AutoOTACommand import AutoOTAReadCommand, AutoOTAProgramCommand, AutoOTAEraseCommand, AutoOTAVerifyCommand, AutoOTARebootCommand, AutoOTAConfirmCommand
+from ProgressBarHelper import make_progress_callback, DosSpinner
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.backends import default_backend
 
 logging.basicConfig(
     level=logging.INFO,
@@ -234,33 +237,165 @@ async def do_cmd_read(args: argparse.Namespace) -> None:
 
 async def do_cmd_write(args: argparse.Namespace) -> None:
     """Perform **write** operation (flash data from file)."""
-    # todo: implement command logic
-    pass
+    device, controller = await connect_ble(args)
+    if args.length:
+        logger.info(f"Writing flash memory to address 0x{args.address:X} with length {args.length} bytes from file {args.filepath}...")
+    else:
+        logger.info(f"Writing flash memory to address 0x{args.address:X} from file {args.filepath}...")
+    if not args.filepath.is_file():
+        logger.error(f"File {args.filepath} does not exist. Please provide a valid file.")
+        sys.exit(1)
+    flash_data = None
+    try:
+        with open(args.filepath, "rb") as f:
+            flash_data = f.read()
+    except Exception as e:
+        logger.error(f"Failed to read file {args.filepath}: {e}")
+        sys.exit(1)
+    
+    # Create write command (512 bytes is the default chunk size)
+    process_length = 0
+    remain_length = min(len(flash_data), args.length) if args.length else len(flash_data)
+    address = args.address
+    progress_callback = make_progress_callback(size_total=remain_length, desc="Flash Write")
+    progress_callback(process_length, remain_length)  # Initialize progress bar
+    while True:
+        chunk_length = min(remain_length, 512)
+        write_cmd = AutoOTAProgramCommand(address=address, data=flash_data[process_length:process_length + chunk_length])
+        try:
+            await controller.send_command(write_cmd)
+        except Exception as e:
+            logger.error(f"Failed to write flash memory: {e}")
+            sys.exit(1)
 
+        # Update address and remaining length
+        address += chunk_length
+        remain_length -= chunk_length
+        process_length += chunk_length
+
+        # Update progress bar
+        progress_callback(process_length, len(flash_data))
+
+        if remain_length <= 0:
+            break
+    await device.disconnect()
+    logger.info(f"Flash memory write complete.")
+    logger.info(f"Data written to address 0x{args.address:X} with length {process_length} bytes.")
 
 async def do_cmd_erase(args: argparse.Namespace) -> None:
     """Perform **erase** operation (erase flash region)."""
-    # todo: implement command logic
-    pass
+    device, controller = await connect_ble(args)
+    logger.info(f"Erasing flash memory from address 0x{args.address:X} with length {args.length} bytes...")
+    erase_cmd = AutoOTAEraseCommand(address=args.address, length=args.length)
+    try:
+        await controller.send_command(erase_cmd)
+    except Exception as e:
+        logger.error(f"Failed to perform erase operation: {e}")
+        sys.exit(1)
+    logger.info("Erase command sent successfully, waiting for completion...")
+    # Wait for the erase operation to complete
+    spinner = DosSpinner()
+    while True:
+        check = await controller.read_ota_status()
+        if check["success"]:
+            break
+        elif check["busy"]:
+            spinner.spin()
+        else:
+            logger.error(f"Erase operation failed with status code: {check['code']}")
+            sys.exit(1)
+    await device.disconnect()
+    logger.info("Erase operation completed successfully.")
 
 
 async def do_cmd_verify(args: argparse.Namespace) -> None:
     """Perform **verify** operation (SHA-256 over flash vs. file)."""
-    # todo: implement command logic
-    pass
+    device, controller = await connect_ble(args)
+    if not args.filepath.is_file():
+        logger.error(f"File {args.filepath} does not exist. Please provide a valid file.")
+        sys.exit(1)
+    
+    logger.info(f"Verifying flash memory from address 0x{args.address:X} with length {args.length} bytes against file {args.filepath}...")
+    try:
+        with open(args.filepath, "rb") as f:
+            flash_data = f.read()
+    except Exception as e:
+        logger.error(f"Failed to read file {args.filepath}: {e}")
+        sys.exit(1)
+    
+    length = min(len(flash_data), args.length) if args.length else len(flash_data)
+    if length <= 0:
+        logger.error("Length must be greater than 0 for verification.")
+        sys.exit(1)
 
+    verify_cmd = AutoOTAVerifyCommand(address=args.address, length=args.length)
+    try:
+        await controller.send_command(verify_cmd)
+    except Exception as e:
+        logger.error(f"Failed to perform verify operation: {e}")
+        sys.exit(1)
+
+    logger.info("Verify command sent successfully, waiting for completion...")
+    # Wait for the verify operation to complete
+    spinner = DosSpinner()
+    while True:
+        check = await controller.read_ota_status()
+        if check["success"]:
+            break
+        elif check["busy"]:
+            spinner.spin()
+        else:
+            logger.error(f"Verify operation failed with status code: {check['code']}")
+            sys.exit(1)
+    logger.info("Verify operation completed successfully.")
+
+    sha256_result = await controller.read_io_buffer()
+    logger.info(f"Response  SHA256: {sha256_result.hex()}")
+    await device.disconnect()
+
+    flash_data = flash_data[:length]  # Ensure we only hash the relevant part
+    # Calculate SHA-256 of the flash_data
+    digest = hashes.Hash(hashes.SHA256(), backend=default_backend())
+    digest.update(flash_data)
+    calculated_sha256 = digest.finalize()
+    logger.info(f"Localfile SHA256: {calculated_sha256.hex()}")
+
+    #Compare the calculated SHA-256 with the result from the device
+    if calculated_sha256 == sha256_result:
+        logger.info("SHA-256 verification successful.")
+    else:
+        logger.error("SHA-256 verification failed!")
 
 async def do_cmd_reboot(args: argparse.Namespace) -> None:
     """Perform **reboot** operation (simple MCU reboot)."""
-    # todo: implement command logic
-    pass
+    device, controller = await connect_ble(args)
+    logger.info("Rebooting the device...")
+    reboot_cmd = AutoOTARebootCommand()
+    try:
+        await controller.send_command(reboot_cmd)
+    except BleakError as e:
+        logger.error(f"Failed to send reboot command: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.info("Seems like the device rebooted successfully (Connection lost).")
+    await device.disconnect()
+    logger.info("Reboot command requested successfully.")
 
 
 async def do_cmd_commit(args: argparse.Namespace) -> None:
     """Perform **commit** operation (finalise OTA + reboot)."""
-    # todo: implement command logic
-    pass
-
+    device, controller = await connect_ble(args)
+    logger.info("Committing OTA operation and rebooting the device...")
+    commit_cmd = AutoOTAConfirmCommand()
+    try:
+        await controller.send_command(commit_cmd)
+    except BleakError as e:
+        logger.error(f"Failed to send commit command: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.info("Seems like the device rebooted successfully (Connection lost).")
+    await device.disconnect()
+    logger.info("Commit command requested successfully. Device should reboot and switch to the new firmware.")
 
 # ---------------------------------------------------------------------------
 # Command routing helper
