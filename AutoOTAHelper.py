@@ -336,9 +336,12 @@ class AutoOTAController():
 
         # Read the result from the IO buffer characteristic if the command requires a result
         if cmd.cmd_need_result():
+            self.logger.debug(f"Command {cmd.name} requires result, reading IO buffer")
             char = await self.device.get_characteristic_with_service(service.uuid, self.CHARACTERISTIC_DESCRIPTIONS_OTA["ota_buffer"].uuid)
+            self.logger.debug(f"Reading result from characteristic {char.uuid}")
             result_data = await self.device.read_characteristic(char)
             cmd.cmd_set_result(result_data)
+            self.logger.debug(f"Command {cmd.name} result: {result_data.hex() if result_data else 'None'}")
     
     async def read_io_buffer(self) -> bytes:
         self.device._ensure_connected()
