@@ -1,8 +1,8 @@
 # AutoOTA Flash Tool Utility
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python Version](https://img.shields.io/badge/Python-3.7%2B-blue.svg)](https://www.python.org/downloads/)
-[![PlatformIO Compatible](https://img.shields.io/badge/PlatformIO-Compatible-blue.svg)](https://platformio.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge)](LICENSE)
+[![Python Version](https://img.shields.io/badge/Python-3.7%2B-yellow.svg?style=for-the-badge)](https://www.python.org/downloads/)
+[![PlatformIO Compatible](https://img.shields.io/badge/PlatformIO-Compatible-blue.svg?style=for-the-badge)](https://platformio.org/)
 
 (English version available in [README.md](README.md))
 
