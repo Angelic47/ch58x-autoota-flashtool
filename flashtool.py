@@ -579,7 +579,7 @@ def main() -> None:  # noqa: D401
     try:
         asyncio.run(_async_main())
     except KeyboardInterrupt:
-        logger.warning("Interrupted by user - exiting…")
+        logger.warning("Interrupted by user - exiting...")
 
 
 if __name__ == "__main__":
