@@ -284,6 +284,7 @@ class AutoOTAController():
 
         # Write command to the IO buffer characteristic
         if cmd_iobuf:
+            self.logger.debug(f"Writing IO buffer for command {cmd.name}: {cmd_iobuf.hex()}")
             service = await self.device.get_services_by_uuid(self._UUID_SERVICE_OTA)
             char = await self.device.get_characteristic_with_service(service.uuid, self.CHARACTERISTIC_DESCRIPTIONS_OTA["ota_buffer"].uuid)
             await self.device.write_characteristic(char, cmd_iobuf)

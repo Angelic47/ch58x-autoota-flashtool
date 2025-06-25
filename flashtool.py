@@ -455,8 +455,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def _validate_args(args: argparse.Namespace) -> None:
     """Ensure address/length/file are supplied when required by *mode*."""
 
-    def need(name: str, desc: str = None) -> None:  # tiny helper
+    def need(name: str, desc: str = None, cmdarg: str = None) -> None:  # tiny helper
         if getattr(args, name) is None:
+            if cmdarg is not None:
+                name = cmdarg
             if desc is None:
                 sys.exit(f"error: {name} is required for {args.mode} mode")
             else:
@@ -473,7 +475,7 @@ def _validate_args(args: argparse.Namespace) -> None:
     if args.mode in {"read", "erase", "verify"}:
         need("length", "Length in bytes")
     if args.mode in {"write", "verify"}:
-        need("filepath", "Path to firmware file")
+        need("filepath", "Path to firmware file", "file")
 
 
 # ---------------------------------------------------------------------------
