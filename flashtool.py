@@ -15,15 +15,19 @@ Modes (choose **exactly one**):
     verify   Verify flash with SHA-256 output
     reboot   Reboot the device
     commit   Commit the OTA, switch flash bank and reboot the device
+    flash    Perform a full OTA operation (info + erase + write + verify + commit)
 
 Common options:
     --address <int>   Start address (hex or decimal). Required by read / write / erase / verify.
     --length  <int>   Data length. Required by read / erase / verify.
     --file    <path>  Path to use as input/output depending on the mode.
+    --bank-a  <path>  Path to use as input/output for the OTA bank A for flash operations.
+    --bank-b  <path>  Path to use as input/output for the OTA bank B for flash operations.
 
 BLE transport options (choose **one**):
-    --name <str>  BLE peripheral advertised name
-    --mac  <str>  BLE peripheral MAC address (colon-separated)
+    --name <str>      BLE peripheral advertised name
+    --mac  <str>      BLE peripheral MAC address (colon-separated)
+    --write-no-rsp    Flag to disable write response for BLE operations (optional, may speed up operations, but may cause issues)
 
 BLE AES-CMAC key (optional, only needed for OTA commands):
     --aes-key <hex>  AES-CMAC key for OTA operations (32 characters hex string)
@@ -32,6 +36,7 @@ Example:
     ./flashtool.py info --name "Test Device"
     ./flashtool.py read --address 0x00001000 --length 256 --name "Test Device" --aes-key 0123456789ABCDEFFEDCBA9876543210
     ./flashtool.py write --address 0x00001000 --file firmware.bin --mac AA:BB:CC:DD:EE:FF --aes-key 0123456789ABCDEFFEDCBA9876543210
+    ./flashtool.py flash --address 0x00001000 --bank-a bank_a.bin --bank-b bank_b.bin --mac AA:BB:CC:DD:EE:FF --aes-key 0123456789ABCDEFFEDCBA9876543210
 """
 
 from __future__ import annotations
@@ -79,31 +84,39 @@ def print_hex_view(data: bytes) -> None:
 # Command implementations
 # ---------------------------------------------------------------------------
 
+global g_device, g_controller  # Global variables to hold device and controller instances
+g_device = None
+g_controller = None
+
 async def connect_ble(args: argparse.Namespace) -> None:
     """Connect to the BLE device based on provided arguments."""
-    device = None
-    controller = None
+    global g_device, g_controller
+    if g_device is not None and g_controller is not None:
+        return g_device, g_controller
+    
+    write_rsp = None if not args.write_no_rsp else False
+
     if args.name:
         logger.info(f"Connecting to BLE device with name: {args.name}")
-        device = AutoOTADevice(name=args.name)
+        g_device = AutoOTADevice(name=args.name, write_resp=write_rsp)
     elif args.mac:
         logger.info(f"Connecting to BLE device with MAC: {args.mac}")
-        device = AutoOTADevice(address=args.mac)
+        g_device = AutoOTADevice(address=args.mac, write_resp=write_rsp)
     else:
         logger.error("No BLE device name or MAC address provided.")
         logger.error("Use --name or --mac to specify the device.")
         sys.exit(1)
 
     try:
-        await device.connect()
-        controller = AutoOTAController(device, aes_key=bytes.fromhex(args.aes_key) if args.aes_key else None)
+        await g_device.connect()
+        g_controller = AutoOTAController(g_device, aes_key=bytes.fromhex(args.aes_key) if args.aes_key else None)
     except Exception as e:
         logger.error(f"Failed to connect to BLE device: {e}")
         sys.exit(1)
-    logger.info(f"Connected to BLE device ({device.client.address}) successfully.")
-    return device, controller
+    logger.info(f"Connected to BLE device ({g_device.client.address}) successfully.")
+    return g_device, g_controller
 
-async def print_device_info(controller: AutoOTAController) -> None:
+async def print_device_info(controller: AutoOTAController) -> dict:
     """Print device information."""
     device_info = None
     try:
@@ -114,8 +127,9 @@ async def print_device_info(controller: AutoOTAController) -> None:
     logger.info("Device Information:")
     for key, value in device_info["values"].items():
         logger.info(f"    - {device_info["descriptions"][key].name}: {value if value is not None else 'N/A'}")
+    return device_info
 
-async def print_ota_info(controller: AutoOTAController) -> None:
+async def print_ota_info(controller: AutoOTAController) -> dict:
     """Print OTA information."""
     flash_flags = None
     try:
@@ -144,33 +158,38 @@ async def print_ota_info(controller: AutoOTAController) -> None:
     logger.info(f"    - Current Status Flags: {flash_mode_readable} (0x{flash_mode})")
     logger.info(f"    - Boot Reason: {boot_reason_readable} (0x{boot_reason})")
 
+    return flash_flags
 
-async def do_cmd_info(args: argparse.Namespace) -> None:
+
+async def do_cmd_info(args: argparse.Namespace, disconnect: bool = True) -> None:
     """Perform **info** (device + OTA info read)."""
     """Perform **info** (device + OTA info read)."""
     device, controller = await connect_ble(args)
     await print_device_info(controller)
     await print_ota_info(controller)
-    await device.disconnect()
+    if disconnect:
+        await device.disconnect()
 
 
-async def do_cmd_devinfo(args: argparse.Namespace) -> None:
+async def do_cmd_devinfo(args: argparse.Namespace, disconnect: bool = True) -> None:
     """Perform **devinfo** (device-only info read)."""
     device, controller = await connect_ble(args)
     logger.info("Reading device information...")
     await print_device_info(controller)
-    await device.disconnect()
+    if disconnect:
+        await device.disconnect()
 
 
-async def do_cmd_otainfo(args: argparse.Namespace) -> None:
+async def do_cmd_otainfo(args: argparse.Namespace, disconnect: bool = True) -> None:
     """Perform **otainfo** (OTA-only info read)."""
     device, controller = await connect_ble(args)
     logger.info("Reading OTA Information...")
     await print_ota_info(controller)
-    await device.disconnect()
+    if disconnect:
+        await device.disconnect()
 
 
-async def do_cmd_read(args: argparse.Namespace) -> None:
+async def do_cmd_read(args: argparse.Namespace, disconnect: bool = True) -> None:
     """Perform **read** operation (dump flash to file)."""
     device, controller = await connect_ble(args)
     logger.info(f"Reading flash memory from address 0x{args.address:X} with length {args.length} bytes...")
@@ -233,9 +252,10 @@ async def do_cmd_read(args: argparse.Namespace) -> None:
     else:
         print_hex_view(flash_dump)
     del progress_callback  # Clean up progress callback to save memory
-    await device.disconnect()
+    if disconnect:
+        await device.disconnect()
 
-async def do_cmd_write(args: argparse.Namespace) -> None:
+async def do_cmd_write(args: argparse.Namespace, disconnect: bool = True) -> None:
     """Perform **write** operation (flash data from file)."""
     device, controller = await connect_ble(args)
     if args.length:
@@ -278,11 +298,12 @@ async def do_cmd_write(args: argparse.Namespace) -> None:
 
         if remain_length <= 0:
             break
-    await device.disconnect()
+    if disconnect:
+        await device.disconnect()
     logger.info(f"Flash memory write complete.")
     logger.info(f"Data written to address 0x{args.address:X} with length {process_length} bytes.")
 
-async def do_cmd_erase(args: argparse.Namespace) -> None:
+async def do_cmd_erase(args: argparse.Namespace, disconnect: bool = True) -> None:
     """Perform **erase** operation (erase flash region)."""
     device, controller = await connect_ble(args)
     logger.info(f"Erasing flash memory from address 0x{args.address:X} with length {args.length} bytes...")
@@ -304,11 +325,12 @@ async def do_cmd_erase(args: argparse.Namespace) -> None:
         else:
             logger.error(f"Erase operation failed with status code: {check['code']}")
             sys.exit(1)
-    await device.disconnect()
+    if disconnect:
+        await device.disconnect()
     logger.info("Erase operation completed successfully.")
 
 
-async def do_cmd_verify(args: argparse.Namespace) -> None:
+async def do_cmd_verify(args: argparse.Namespace, disconnect: bool = True) -> None:
     """Perform **verify** operation (SHA-256 over flash vs. file)."""
     device, controller = await connect_ble(args)
     if not args.filepath.is_file():
@@ -351,7 +373,8 @@ async def do_cmd_verify(args: argparse.Namespace) -> None:
 
     sha256_result = await controller.read_io_buffer()
     logger.info(f"Response  SHA256: {sha256_result.hex()}")
-    await device.disconnect()
+    if disconnect:
+        await device.disconnect()
 
     flash_data = flash_data[:length]  # Ensure we only hash the relevant part
     # Calculate SHA-256 of the flash_data
@@ -365,6 +388,7 @@ async def do_cmd_verify(args: argparse.Namespace) -> None:
         logger.info("SHA-256 verification successful.")
     else:
         logger.error("SHA-256 verification failed!")
+        sys.exit(1)
 
 async def do_cmd_reboot(args: argparse.Namespace) -> None:
     """Perform **reboot** operation (simple MCU reboot)."""
@@ -397,6 +421,54 @@ async def do_cmd_commit(args: argparse.Namespace) -> None:
     await device.disconnect()
     logger.info("Commit command requested successfully. Device should reboot and switch to the new firmware.")
 
+async def do_cmd_flash(args: argparse.Namespace) -> None:
+    """This is a convenience command that combines several operations."""
+    """Perform **flash** operation (info + erase + write + verify + commit)."""
+    device, controller = await connect_ble(args)
+    logger.info("Performing flash operation (info + erase + write + verify + commit)...")
+
+    if not args.bank_a.is_file() or not args.bank_b.is_file():
+        logger.error("Both --bank-a and --bank-b must be specified and must be valid files.")
+        sys.exit(1)
+    
+    # Step 1: Read device and OTA info
+    try:
+        await print_device_info(controller)
+    except:
+        logger.warning("Failed to read all device information (may not implemented by the device).")
+        logger.warning("Continuing with the flash operation anyway.")
+    
+    flash_flags = await print_ota_info(controller)
+
+    if flash_flags["values"]['ota_flash_bank'] == "a5a5a5a5":
+        # Device is bank A, we need to write to bank B
+        args.address = 0x00037000
+        args.length = 0x00036000
+        args.filepath = args.bank_b
+    elif flash_flags["values"]['ota_flash_bank'] == "5a5a5a5a":
+        # Device is bank B, we need to write to bank A
+        args.address = 0x00001000
+        args.length = 0x00036000
+        args.filepath = args.bank_a
+    else:
+        logger.error("Unknown OTA flash bank state. Cannot determine which bank to write to.")
+        sys.exit(1)
+
+    # Step 2: Erase flash memory
+    await do_cmd_erase(args, disconnect=False)
+
+    # Step 3: Write flash memory from file
+    await do_cmd_write(args, disconnect=False)
+
+    # Step 4: Verify flash memory
+    args.length = Path(args.filepath).stat().st_size
+    await do_cmd_verify(args, disconnect=False)
+
+    # Step 5: Commit OTA operation
+    await do_cmd_commit(args)
+
+    logger.info("Flash operation completed successfully.")
+
 # ---------------------------------------------------------------------------
 # Command routing helper
 # ---------------------------------------------------------------------------
@@ -411,6 +483,7 @@ COMMAND_TABLE: Dict[str, Callable[[argparse.Namespace], asyncio.Future]] = {
     "verify": do_cmd_verify,
     "reboot": do_cmd_reboot,
     "commit": do_cmd_commit,
+    "flash": do_cmd_flash,
 }
 
 
@@ -433,6 +506,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ble_group = p.add_mutually_exclusive_group(required=True)
     ble_group.add_argument("--name", help="BLE peripheral advertised name")
     ble_group.add_argument("--mac", help="BLE peripheral MAC address (AA:BB:CC:DD:EE:FF)")
+
+    # Flags for BLE operations
+    p.add_argument("--write-no-rsp", action="store_true", help="Disable write response for BLE operations (optional, may speed up operations, but may cause issues)")
     
     # AES-CMAC key for OTA operations (optional, only needed for OTA commands, defaults to None)
     p.add_argument("--aes-key", type=str, help="AES-CMAC key for OTA operations (hex string, 32 characters). Optional, defaults to None.")
@@ -448,6 +524,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--address", type=_int_auto, help="Start address for flash.")
     p.add_argument("--length", type=_int_auto, help="Length in bytes. Required by read/erase/verify, optional for write (limits write size).")
     p.add_argument("--file", dest="filepath", type=Path, help="Path to input/output file.")
+    p.add_argument("--bank-a", type=Path, help="Path to OTA bank A file (for flash operations).")
+    p.add_argument("--bank-b", type=Path, help="Path to OTA bank B file (for flash operations).")
 
     return p
 
@@ -467,7 +545,7 @@ def _validate_args(args: argparse.Namespace) -> None:
         if len(args.aes_key) != 32 or not all(c in "0123456789abcdefABCDEF" for c in args.aes_key):
             sys.exit("error: --aes-key must be a 32-character hex string (16 bytes)")
 
-    if args.mode in {"read", "write", "erase", "verify", "commit", "reboot", "commit"}:
+    if args.mode in {"read", "write", "erase", "verify", "commit", "reboot", "commit", "flash"}:
         need("aes_key", "AES-CMAC key for OTA operations")
         check_aes_key()
     if args.mode in {"read", "write", "erase", "verify"}:
@@ -476,6 +554,9 @@ def _validate_args(args: argparse.Namespace) -> None:
         need("length", "Length in bytes")
     if args.mode in {"write", "verify"}:
         need("filepath", "Path to firmware file", "file")
+    if args.mode in {"flash"}:
+        need("bank_a", "Path to OTA bank A file", "bank-a")
+        need("bank_b", "Path to OTA bank B file", "bank-b")
 
 
 # ---------------------------------------------------------------------------

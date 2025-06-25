@@ -12,7 +12,7 @@ from cryptography.hazmat.backends import default_backend
 from AutoOTACommand import AutoOTABaseCommand
 
 class AutoOTADevice():
-    def __init__(self, address: str = None, name: str = None, timeout: float = 20.0) -> None:
+    def __init__(self, address: str = None, name: str = None, timeout: float = 20.0, write_resp: bool = None) -> None:
         if not address and not name:
             raise ValueError("Either 'address' or 'name' must be provided")
         self.address = address
@@ -21,6 +21,7 @@ class AutoOTADevice():
         self.connected = False
         self.timeout = timeout
         self.device_services = None
+        self.write_resp_flag = write_resp
         self.logger = logging.getLogger(__name__)
     
     def _ensure_connected(self) -> None:
@@ -131,10 +132,10 @@ class AutoOTADevice():
             self.logger.error(f"Failed to read characteristic {characteristic}: {e}")
             raise
     
-    async def write_characteristic(self, characteristic: BleakGATTCharacteristic, data: bytes) -> None:
+    async def write_characteristic(self, characteristic: BleakGATTCharacteristic, data: bytes, write_resp: bool = None) -> None:
         self._ensure_connected()
         try:
-            await self.client.write_gatt_char(characteristic, data)
+            await self.client.write_gatt_char(characteristic, data, response=write_resp)
         except Exception as e:
             self.logger.error(f"Failed to write to characteristic {characteristic}: {e}")
             raise
@@ -287,7 +288,7 @@ class AutoOTAController():
             self.logger.debug(f"Writing IO buffer for command {cmd.name}: {cmd_iobuf.hex()}")
             service = await self.device.get_services_by_uuid(self._UUID_SERVICE_OTA)
             char = await self.device.get_characteristic_with_service(service.uuid, self.CHARACTERISTIC_DESCRIPTIONS_OTA["ota_buffer"].uuid)
-            await self.device.write_characteristic(char, cmd_iobuf)
+            await self.device.write_characteristic(char, cmd_iobuf, write_resp=self.device.write_resp_flag)
         
         # Read the authentication challenge
         service = await self.device.get_services_by_uuid(self._UUID_SERVICE_OTA)
@@ -327,12 +328,12 @@ class AutoOTAController():
 
         # 5. Write the token to the OTA Token characteristic
         char = await self.device.get_characteristic_with_service(service.uuid, self.CHARACTERISTIC_DESCRIPTIONS_OTA["ota_token"].uuid)
-        await self.device.write_characteristic(char, token_signature)
+        await self.device.write_characteristic(char, token_signature, write_resp=self.device.write_resp_flag)
         self.logger.debug(f"Token signature sent to device")
 
         # Write the command bytes to the OTA Main Command characteristic
         char = await self.device.get_characteristic_with_service(service.uuid, self.CHARACTERISTIC_DESCRIPTIONS_OTA["ota_main"].uuid)
-        await self.device.write_characteristic(char, cmd_bytes)
+        await self.device.write_characteristic(char, cmd_bytes) # must be written with response to confirm command was processed
         self.logger.debug(f"Command {cmd.name} sent to device")
 
         # Read the result from the IO buffer characteristic if the command requires a result
